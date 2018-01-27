@@ -1,0 +1,918 @@
+#!/usr/bin/python
+#Released under GNU General Public License version 3, see the file COPYING for details.
+#Change the value of the following two lines if your sound device is not /dev/dsp
+
+# Changes made to code Jan 2017 by Marc Lytle
+# marclytle.com
+# mlytle4218@gmail.com
+
+soundin="/dev/dsp"
+soundout="/dev/dsp"
+from pyeca import *
+import commands, sys, time, os
+e = ECA_CONTROL_INTERFACE(0)
+
+
+def do_command(cmdstring):
+   e.command(cmdstring)
+   returned_error=e.last_error()
+   if returned_error:
+     print "an error occured while doing "+cmdstring+" the error was: "+returned_error
+     print "remember you should have a backup in "+infile+"~"
+     print "exiting"
+     exit()
+   return
+
+if len(sys.argv) == 1:
+   print "no file given, using unknown.wav"
+   do_command("cs-add chain1")
+   do_command("cs-set-audio-format 16,2,44100")
+   do_command("c-add chain1")
+   do_command("ai-add rtnull")
+   do_command("ao-add unknown.wav")
+   do_command("cs-set-length 1")
+   
+   do_command("cs-connect chain1")
+   do_command("run")
+   
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   infile = "unknown.wav"
+   do_command("cs-get-length")
+   global_file_length=e.last_float()
+else:
+   infile = sys.argv.pop(1)
+   if not (os.path.isfile(infile)):
+     do_command("cs-add chain1")
+     do_command("cs-set-audio-format 16,2,44100")
+     do_command("c-add chain1")
+     do_command("ai-add rtnull")
+     do_command("ao-add "+infile)
+     do_command("cs-set-length 1")
+     do_command("cs-connect chain1")
+     do_command("run")
+     do_command("cs-disconnect chain1")
+     do_command("cs-remove chain1")
+     print infile+" is new and contains one second silense."
+   print "please wait while we make a backup of "+infile
+   backedup=commands.getstatusoutput("cp "+infile+" "+infile+"~")
+   if backedup[0]==0:
+     print "backup complete"
+   else:
+     print "backup of "+infile+" failled, reason: "+backedup[1]
+     print "warning: proceding without a backup"
+
+
+# Reorganized buttons for central location in case of need of changes
+
+button_stop = "f1"
+button_play = "f2"
+button_fast_rewind = "f3"
+button_fast_forward = "f4"
+button_begin_block="f5"
+button_end_block="f6"
+button_play_block="f7"
+button_write_block="f8"
+button_remove_block="f9"
+button_record="f10"
+button_insert_from_file="f11"
+button_go_to_end="f12"
+button_toggle_half_speed="l"
+button_wrote_position="p"
+button_home="home"
+button_left="left"
+button_right="right"
+button_quit="q"
+button_jump="j"
+button_write_current_position="w"
+button_nudge_start="s"
+button_nudge_end="d"
+button_clear_block="f"
+
+
+buttons={button_stop: "stop", button_play: "play", button_fast_rewind: "fast rewind", button_fast_forward: "fast forward", button_begin_block: "begin block", button_end_block: "end block", button_play_block: "play block", button_write_block: "write block", button_remove_block: "remove block", button_record: "record", button_insert_from_file: "insert from file", button_go_to_end: "go to end", button_toggle_half_speed: "toggle half speed", button_wrote_position: "wrote position", button_nudge_start: "modified block start position", button_nudge_end: "modified block end position", button_clear_block:"clear block"}
+
+bs='FALSE'
+be='FALSE'
+forwarding=False
+rewinding=False
+halfspeed=False
+key=""
+active_controls=[button_stop,button_play,button_quit,button_go_to_end]
+global block_controls_active
+block_controls_active=True
+playing_block = False
+half_speed = False
+
+   
+def deactivate_block_controls():
+ active_controls.remove(button_begin_block)
+ active_controls.remove(button_end_block)
+ active_controls.remove(button_play_block)
+ active_controls.remove(button_write_block)
+ active_controls.remove(button_write_block)
+ active_controls.remove(button_record)
+ active_controls.remove(button_insert_from_file)
+ global block_controls_active
+ block_controls_active=False
+ 
+def reactivate_block_controls():
+ active_controls.append(button_begin_block)
+ active_controls.append(button_end_block)
+ active_controls.append(button_play_block)
+ active_controls.append(button_write_block)
+ active_controls.append(button_write_block)
+ active_controls.append(button_record)
+ active_controls.append(button_insert_from_file)
+ active_controls.append(button_go_to_end)
+ global block_controls_active
+ block_controls_active=True
+ 
+
+def currentpos():
+ do_command("get-position")
+ result=e.last_float()
+ return result
+
+
+def write_position():
+   prevpos=0
+   if os.path.isfile(infile+".pos"):
+     pf=open(infile+".pos", "r")
+     poslines=pf.readlines()
+     pf.close()
+     lastline=poslines[len(poslines)-1]
+     last_written=lastline.split(' ')
+     prevpos=float(last_written[0])+float(last_written[1])     
+#     do_command("cs-setpos "+str(prevpos))
+   tracklen=currentpos()-prevpos
+   addline=str(prevpos)+" "+str(tracklen)+chr(10)
+   pf=open(infile+".pos", "a")
+   pf.write(addline)
+   pf.close()
+   return str(prevpos)
+
+# def movearound(direction):
+#    #The code for rewinding in this function is currently not used as it is buggy.
+#    global forwarding,rewinding,oldpos,was_playing
+#    if not (rewinding or forwarding):
+#      oldpos=currentpos()
+#      do_command("engine-status")
+#      if e.last_string()=="running":
+#        was_playing=True
+#      else:
+#        was_playing=False
+
+#      do_command("stop")
+#    d=direction
+
+
+#    if d=='r':
+#      if rewinding==False:
+#        do_command("cs-disconnect chain1")
+#        do_command("cs-remove chain1")
+#        do_command("cs-add chain1")
+#        do_command("c-add chain1")
+#        do_command("c-select chain1")
+#        do_command("ai-add reverse,"+infile)
+#        do_command("ao-add "+soundout)
+#        do_command("cs-option -ei:400")
+#        do_command("cs-connect chain1")
+#        do_command("setpos "+str(oldpos))
+#        do_command("start")
+       
+#        rewinding=True
+#        return
+       
+#      else:
+#        rewinding=False
+#        do_command("stop")
+#        do_command("cs-clear")
+#        rewindpos=currentpos()
+#        do_command("cs-disconnect chain1")
+#        do_command("cs-remove chain1")
+#        do_command("cs-add chain1")
+#        do_command("c-add chain1")
+#        do_command("c-select chain1")
+#        do_command("ai-add "+infile)
+#        do_command("ao-add "+soundout)
+#        do_command("cs-connect chain1")
+#        rewound=rewindpos-oldpos
+#        do_command("setpos "+str(oldpos-rewound))
+#        if was_playing:
+#          do_command("start")
+#        return
+#    else:
+#      if forwarding==False:
+#        do_command("cs-option -ei:400")
+#        forwarding=True
+#      else:
+#        if was_playing == False:
+#          do_command("engine-status")
+#          do_command("stop")
+#          do_command("engine-status")
+#          while e.last_string() == "running":
+#            do_command("stop")
+#            do_command("engine-status")
+#        do_command("c-clear")
+#        waitfortask
+#        forwarding=False
+#        return
+         
+         
+         
+#    if (not block_controls_active) and d=='r' and currentpos() <= bs:
+#      #we are trying to rewind past block start when playinng block
+#      do_command("setpos "+str(bs))
+     
+#    if (not block_controls_active) and d=='f' and currentpos() >= be:
+#      #we are trying to forward past block end when playing block
+#      do_command("setpos "+str(be))
+#    do_command("start")
+#    return
+
+
+# replaced with slow_forward()
+# def go_slow():
+#      global halfspeed, was_playing
+#      do_command("engine-status")
+#      if e.last_string()=="running":
+#        was_playing=True
+#      else:
+#        was_playing=False
+#      if halfspeed==False:
+#        do_command("cs-option -ei:70")
+#        halfspeed=True
+#      else:
+#        if was_playing == False:
+#          do_command("engine-status")
+#          do_command("stop")
+#          do_command("engine-status")
+#          while e.last_string() == "running":
+#            do_command("stop")
+#            do_command("engine-status")
+#        do_command("c-clear")
+#        waitfortask
+#        halfspeed=False
+#        return
+#      return
+     
+def slow_forward():
+  global half_speed
+
+  if half_speed:
+    half_speed = False
+    do_command("c-clear")
+  else:
+    half_speed = True
+    do_command("cs-option -ei:50")
+
+
+
+def blocktime():
+   if bs == be:
+     print "no block"
+     result=False
+     return result
+   if bs > be:
+     print "start later than end"
+     result=False
+     return result
+   result=be-bs
+   return result
+
+
+def block_valid():
+   if bs == be:
+     print "block invalid"
+     return False
+   if bs > be:
+     print "beginning of block after end - invalid"
+     return False
+   return True
+
+#doesn't seem to be used anywhere
+# def playagain(vanaf):
+#    do_command("cs-add default -i:infile -o alsa")
+#    do_command("cs-connect default")    
+#    do_command("setpos "+str(vanaf))
+#    do_command("start")
+
+
+def play_block_new():
+  global playing_block
+  if block_valid():
+    playing_block = True
+    do_command("stop")   
+    do_command("setpos "+str(bs))
+    do_command("cs-set-length "+str(be))
+    do_command("start")
+    
+
+# replaced with play_block_new()
+# def playblock():
+
+#    if blocktime() == False:
+#      return
+#    do_command("cs-get-length")
+#    mainlength=e.last_float()
+#    mainpos=keepme
+#    do_command("stop")   
+#    do_command("setpos "+str(bs))
+#    do_command("cs-set-length "+str(be))
+#    if blocktime() < 10:
+#      do_command("run")
+#    else:
+#      do_command("start")
+     
+#      user_control()
+#    do_command("cs-set-length "+str(mainlength))  
+#    do_command("setpos "+str(mainpos))
+   
+#    print blocktime()
+
+
+def write_block():
+
+   if blocktime() == False:
+     return
+   do_command("cs-get-length")
+   mainlength=e.last_float()
+   mainpos=keepme
+   do_command("stop")   
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   outblock=raw_input("write block as? ")
+   if os.path.isfile(outblock):
+    os.remove(outblock)
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   
+   set_chain_format()
+   do_command("ai-add "+infile)
+   do_command("ao-add "+outblock)
+   do_command("cop-select chain1")
+   
+   do_command("cs-connect chain1")
+   do_command("ai-select "+infile)
+   do_command("ai-setpos "+str(bs))
+#   do_command("setpos "+str(bs))
+   print "block start "+str(bs)
+   
+   do_command("cs-set-length "+str(be-bs))
+   do_command("run")
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   do_command("ai-add "+infile)
+   do_command("ao-add "+soundout)
+   do_command("cop-select chain1")
+   do_command("cs-connect chain1")
+   
+   
+   
+   do_command("cs-set-length "+str(mainlength))  
+   do_command("setpos "+str(mainpos))
+   
+   print "wrote "+outblock+" " + str(be-bs) + " seconds"
+
+def set_chain_format():
+   do_command("cs-option -f:"+bits+","+channels+","+srate)
+
+
+def remove_block():
+
+   if blocktime() == False:
+     return
+   do_command("cs-get-length")
+   global bs,be
+   mainlength=e.last_float()-blocktime()
+   mainpos=keepme
+   if mainpos > bs and mainpos < be:
+     mainpos=bs
+   do_command("stop")   
+   
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   do_command("cs-add chain1")
+   set_chain_format()
+#   do_command("c-add chain1")
+   
+   do_command("ai-add "+infile)
+   do_command("ao-add "+infile)
+   do_command("ai-select "+infile)
+   do_command("ai-setpos "+str(be))
+   do_command("ao-select "+infile)
+   do_command("ao-setpos "+str(bs))
+   
+
+   do_command("cs-connect chain1")
+
+   do_command("start")
+   waitfortask()
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   base_infile=os.path.basename(infile)
+   dir_infile=os.path.dirname(infile)
+   if dir_infile=="":
+     dir_infile=os.path.curdir
+   tempfile=dir_infile+"/tmp_"+base_infile
+   os.rename(infile, tempfile)
+   do_command("cs-add chain1")
+   set_chain_format()
+#   do_command("c-add chain1")
+   do_command("ai-add "+tempfile)
+   do_command("ao-add "+infile)
+   do_command("ao-select "+infile)
+#   do_command("cop-select chain1")
+
+   do_command("cs-connect chain1")
+   do_command("cs-set-length "+str(mainlength))     
+
+   do_command("start")
+   waitfortask()
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   os.unlink(tempfile)
+   do_command("cs-add chain1")
+   set_chain_format()
+#    do_command("c-add chain1")
+   do_command("ai-add "+infile)
+   do_command("ao-add "+soundout)
+   do_command("cs-connect chain1")
+   if mainpos >= be:
+     do_command("setpos "+str(mainpos - blocktime()))
+   else:
+     do_command("setpos "+str(mainpos))
+
+   print "removed ",blocktime()," second block now "+str(mainlength)
+   #new stuff
+   bs='FALSE'
+   be='FALSE'
+   #old stuff
+   # bs=0
+   # be=0
+   return
+   
+
+def rewind(amount):
+  global playing_block, bs
+  if playing_block:
+    if (currentpos()-amount) < bs:
+      do_command("setpos " + str(bs))
+    else:
+      do_command("setpos " + str(currentpos() - amount))
+  else:
+    if currentpos() - amount < 0:
+      do_command("setpos 0.0")
+    else :
+      do_command("setpos " + str(currentpos() - amount))
+  
+  return
+
+def fast_forward(amount):
+  global playing_block, be
+  if playing_block:
+    if (currentpos() + amount) > be:
+      do_command("setpos " + str(be))
+    else:
+      do_command("setpos " + str(currentpos() + amount))
+  else:
+    do_command("cs-get-length")
+    file_length=e.last_float()
+    if currentpos() + amount > file_length:
+      do_command("setpos " + str(file_length))
+    else :
+      do_command("setpos " + str(currentpos() + amount))
+  return
+
+def clear_block():
+  global bs, be
+  bs='FALSE'
+  be='FALSE'
+  do_command("cs-disconnect chain1")
+  do_command("cs-remove chain1")
+  do_command("cs-add chain1")
+  do_command("c-add chain1")
+  do_command("ai-add "+infile)
+  do_command("ao-add "+soundout)
+  do_command("cop-select chain1")
+  do_command("cs-connect chain1")
+  return
+
+
+
+# replaced in rewind() and fast_forward()
+# def range_check(start_end):
+#  global bs, be, block_controls_active
+#  # print "in range check"
+#  # print "start_end =" + start_end
+#  # print "block_controls_active =" + str(not block_controls_active)
+#  # print "bs=" + str(bs)
+#  # print "currentpos()="+str(currentpos())
+#  # print "currentpos()<bs=" + str(currentpos()<bs)
+#  if start_end=="start" and (not block_controls_active) and currentpos()<bs:
+#  # if start_end=="start"and bs!='FALSE' and (block_controls_active) and currentpos()<bs:
+#    print "in first option in range check"
+#    do_command("setpos "+str(bs))
+#    print "trying to rewind past block start"
+#    return
+#  if start_end=="start" and currentpos()<0:
+#    print "in second option in range check"
+#    do_command("setpos 0")
+#    return "hi"
+#  if start_end=="end" and (not block_controls_active) and currentpos() > be:
+#    print "in third option in range check"
+#    do_command("setpos "+str(be))
+#    return
+#  do_command("cs-get-length")
+#  file_length=e.last_float()
+#  if start_end=="end" and currentpos() > file_length:
+#    do_command("setpos "+str(file_length))
+#    return
+#  return
+   
+
+def waitfortask():
+   time.sleep(0.25)
+   do_command("engine-status")
+   while e.last_string() == "running":
+     do_command("engine-status")
+   
+
+def record_realtime():
+   do_command("stop")
+   global keepme, buttons
+   mainpos=keepme   
+   buttons["f2"]="recording"
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   if os.system("test -f realtime.wav") == 0:
+     os.unlink("realtime.wav")
+   do_command("cs-add chain1")
+
+   do_command("c-add chain1")
+   set_chain_format()
+
+   do_command("ai-add "+soundin)
+   do_command("ao-add realtime.wav")
+   do_command("cs-connect chain1")
+   
+   deactivate_block_controls()
+   user_control()
+   reactivate_block_controls()
+   buttons["f2"]="play"
+   do_command("cs-disconnect chain1")
+   
+   do_command("cs-remove chain1")
+   insert_file("realtime.wav", mainpos)
+   return
+   
+def add_file():
+   global keepme
+   mainpos=keepme
+   do_command("stop")
+   if os.system("which pickafile 2> /dev/null > /dev/null") == 0:
+     rc=os.system("pickafile")
+     if rc > 0:
+       return
+     else:
+       newfile=commands.getoutput("cat $HOME/.kies/.`getterm`file")
+   else:
+     newfile=raw_input("filename to insert? ")
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   insert_file(newfile, mainpos)
+   return
+   
+def sameformat(checkfile):
+   do_command("cs-add checkchain")
+   do_command("cs-select checkchain")
+   do_command("c-add check")
+   do_command("c-select check")
+   do_command("ai-add "+checkfile)
+   do_command("ao-add null")
+   do_command("cs-connect checkchain")
+   do_command("engine-launch")
+   do_command("ai-select "+checkfile)
+   do_command("ai-get-format")
+   newformat=e.last_string()
+   do_command("cs-disconnect checkchain")
+   do_command("cs-remove checkchain")
+   if newformat==masterformat:
+     print "formats are the same"
+     result=True
+     return result
+   print checkfile+" is "+newformat
+   result=False
+   return result
+
+def insert_file(newfile, plek):
+
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   do_command("ai-add "+newfile)
+   do_command("ao-add null")
+   
+   do_command("cs-connect chain1")
+   do_command("ai-select "+newfile)
+   do_command("ai-get-length "+newfile)
+   runfor=e.last_float()
+   do_command("cs-disconnect chain1")
+   do_command("cs-remove chain1")
+   
+   
+   format_native=sameformat(newfile)
+   
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   set_chain_format()
+   do_command("ai-add "+infile)
+   do_command("ao-add tmp_l.wav")
+   do_command("cs-select chain1")
+   do_command("cs-connect chain1")
+   waitfortask()
+   do_command("cs-set-length "+str(plek))
+   waitfortask()
+   do_command("ai-select "+infile)
+   waitfortask()
+   do_command("ai-setpos 0")
+   waitfortask()
+   
+   do_command("start")
+   waitfortask()
+   
+   
+   print "written left side up to: ",currentpos()
+   do_command("cs-disconnect chain1")
+   waitfortask()
+   do_command("cs-remove chain1")
+   waitfortask()
+   do_command("cs-add chain1")
+
+   do_command("c-add chain1")
+   set_chain_format()
+   if format_native:
+     do_command("ai-add "+newfile)
+   else:
+     do_command("ai-add resample-hq,auto,"+newfile)
+   waitfortask()
+   do_command("ao-add tmp_l.wav")
+   do_command("cs-connect chain1")
+   waitfortask()
+   do_command("ao-select tmp_l.wav")
+   do_command("ao-setpos "+str(plek))
+   waitfortask()
+   do_command("cs-set-length "+str(runfor))
+   waitfortask()
+   print "inserting "+newfile+" which is ",runfor," seconds long"
+
+   do_command("start")
+   do_command("engine-status")
+   while e.last_string() == "not started":
+     do_command("engine-status")
+   
+   waitfortask()
+   
+   newpos=plek+currentpos()
+   print "starting at "+str(plek)+" inserted up to "+str(newpos)
+   
+   do_command("cs-disconnect chain1")
+   waitfortask()
+   do_command("cs-remove chain1")
+   waitfortask()
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   set_chain_format()
+   do_command("ai-add "+infile)
+   do_command("ao-add tmp_l.wav")
+   do_command("cs-connect chain1")
+   waitfortask()
+   do_command("ai-select "+infile)
+   do_command("ai-setpos "+str(plek))
+   waitfortask()
+   do_command("ao-select tmp_l.wav")
+   do_command("ao-setpos "+str(newpos))
+   waitfortask()
+
+   do_command("engine-status")
+   while e.last_string() != "not started":
+     do_command("engine-status")
+      
+   do_command("start")
+   waitfortask()
+   print "Finished inserting "+newfile
+   
+   do_command("cs-disconnect chain1")
+   waitfortask()
+   do_command("engine-status")
+   do_command("cs-remove chain1")
+   waitfortask()
+   os.unlink(infile)
+   os.rename("tmp_l.wav", infile)
+   
+   do_command("cs-add chain1")
+   do_command("c-add chain1")
+   set_chain_format()
+   do_command("ai-add "+infile)
+   do_command("ao-add "+soundout)
+   do_command("cs-connect chain1")
+   waitfortask()
+   do_command("cs-setpos "+str(plek))
+   do_command("start")
+   return
+   
+
+def nudge_start(delta):
+  global bs, be
+  if bs != 'FALSE':
+    if bs + float(delta) < 0:
+      bs = 0
+    elif bs + float(delta) > float(be):
+      print "Too far - will invalidate block"
+    else:
+      bs += float(delta)
+   
+def nudge_end(delta):
+  do_command("cs-get-length")
+  full_wav_length=e.last_float()
+  global bs, be
+  if be != 'FALSE':
+    if be + float(delta) > full_wav_length:
+      be = full_wav_length
+    elif be + float(delta) < float(bs):
+      print "Too far - will invalidate block"
+    else:
+      be += float(delta)
+   
+def user_control():
+ key=button_play
+ global buttons, bs,be,keepme,block_controls_active
+ 
+ while key != button_quit:
+   keepme = currentpos()
+   if key == button_stop:
+     print buttons[key]
+     do_command("stop")
+     
+   if key == button_play:
+     print buttons[key]
+     do_command("start")
+     
+   if key == button_fast_rewind:
+     print buttons[key]
+     # all new stuff here - checking to see if first we are in the middle of a block operation....don't want to be able to go past the beginning of the block
+     rewind(60)
+     # old stuff
+     # do_command("rewind '10'")
+     # print range_check("start")
+   if key == button_fast_forward:
+     print buttons[key]
+     # all new stuff here - checking to see if first we are in the middle of a block operation....don't want to be able to go past the end of the block
+     fast_forward(60)
+     # old stuff
+     # do_command("forward 60")
+     # range_check("end")
+     
+   if key == button_begin_block:
+     bs=currentpos()
+     # print 'begin block at ',bs
+   if key == button_end_block:
+     be=currentpos()
+     # print 'end block at ',be
+   if key == button_play_block:
+     deactivate_block_controls()
+     # playblock()
+     play_block_new()
+     print buttons[key]
+     reactivate_block_controls()
+   if key == button_write_block:
+     print buttons[key]
+     write_block()
+     
+   if key == button_remove_block:
+     print buttons[key]
+     remove_block()
+   if key == button_record:
+     print buttons[key]
+     record_realtime()
+   if key == button_insert_from_file:
+     print buttons[key]
+     add_file()
+   if key == button_go_to_end:
+     do_command("cs-get-length")
+     einde=e.last_float()
+     do_command("setpos "+str(einde))
+     print 'go to end at ',einde
+   if key == button_home:
+     do_command("setpos 0.0")
+     if not block_controls_active:
+       do_command("setpos "+str(bs))
+     print 'go to start'
+   if key == button_left:
+     # new stuff
+     rewind(5)
+     # old stuff
+     # do_command("rewind 5")
+     # range_check("start")
+     print 'rewind'
+   if key == button_right:
+     #new stuff
+     fast_forward(5)
+     #old stuff
+     # movearound("f")
+     print 'forward'
+   if key == button_write_current_position:
+      print 'now at: ',currentpos()
+   if key == button_jump:
+     jump=raw_input("jump to?")
+     do_command("setpos "+str(jump))
+   if key == button_toggle_half_speed:
+     print buttons[key]
+     # go_slow()
+     slow_forward()
+   if key==button_wrote_position:
+     print buttons[key]+write_position()
+   if key==button_nudge_start:
+     delta=raw_input("Changes block start by how many seconds?")
+     nudge_start(delta)
+   if key==button_nudge_end:
+     delta=raw_input("Changes block end by how many seconds?")
+     nudge_end(delta)
+   if key==button_clear_block:
+    clear_block()
+          
+
+   key=commands.getoutput("catchkey")
+   
+   if key not in active_controls:
+     print key,' inactive here'
+     key = ''
+#Main program starts here.
+
+
+#adding to supprt mp3s using ffmpeg
+
+mp3 = False
+
+file_aspects = infile.split('.')
+if file_aspects[len(file_aspects) -1] == "mp3":
+  mp3 = True
+  print "converting mp3"
+  p = subprocess.Popen(["ffmpeg", "-y", "-v","quiet","-stats", "-i", infile, infile+".wav"], stdout=subprocess.PIPE)
+  (out,err) = p.communicate()
+  if p.returncode == 0:
+    infile += ".wav"
+  else:
+    print "Could not convert mp3"
+    print "Advance editing features will not be available"
+    print "Printing ffmpeg's error"
+    print err
+print infile
+
+
+do_command("cs-add chain1")
+do_command("c-add chain1")
+do_command("ai-add "+infile)
+do_command("ao-add "+soundout)
+do_command("cs-connect chain1")
+do_command("ai-select "+infile)
+
+
+do_command("start")
+keepme = currentpos()
+do_command("ai-get-format")
+masterformat = e.last_string()
+# print "file: ",infile,"master format is: ",masterformat," position ",keepme
+fm=masterformat.split(',')
+bits=fm[0]
+channels=fm[1]
+srate=fm[2]
+#print "bits: ",bits,"channels: ",channels,"samples: ",srate
+
+
+key=button_play
+active_controls=[button_stop,button_play,button_fast_rewind,button_fast_forward,button_begin_block,button_end_block,button_play_block,button_write_block,button_write_block,button_record,button_insert_from_file,button_go_to_end, button_left,button_right,button_home,button_jump,button_write_current_position,button_quit,button_go_to_end,button_wrote_position, button_remove_block, button_toggle_half_speed, button_nudge_start, button_nudge_end, button_clear_block]
+user_control()
+
+do_command("cs-disconnect chain1")
+
+
+# more support for mp3 
+
+if mp3:
+  print infile
+  print infile.replace(".wav","")
+  p = subprocess.Popen(["ffmpeg", "-y", "-v","quiet","-stats", "-i", infile, infile.replace(".wav", "")], stdout=subprocess.PIPE)
+  # p = subprocess.Popen(["ffmpeg", "-y", "-i", infile, infile.replace(".wav", "")], stdout=subprocess.PIPE)
+  (out,err) = p.communicate()
+  if p.returncode == 0:
+    os.remove(infile)
+  else:
+    print "Could not convert back to mp3"
+    print "temporary wave file will not be deleted"
+    print "Printing ffmpeg's error"
+    print err
+print "exiting" 
+       
